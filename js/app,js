@@ -1,0 +1,691 @@
+(() => {
+  'use strict';
+
+  const STORAGE_KEY = 'concurso_tablero_state_v1';
+  const POLL_INTERVAL_MS = 5000;
+  const DEFAULT_TEAM_NAMES = ['Equipo 1', 'Equipo 2', 'Equipo 3', 'Equipo 4'];
+
+  const INITIAL_DEMO_ROUNDS = [
+    { label: 'Ronda 1', scores: [20, 30, 15, 25] },
+    { label: 'Ronda 2', scores: [25, 15, 30, 20] },
+    { label: 'Ronda 3', scores: [30, 20, 15, 25] }
+  ];
+
+  // Alturas visuales de cada pedestal según su puesto actual (1° al 4°)
+  const RANK_HEIGHTS = {
+    1: 'clamp(260px, 40vh, 360px)',
+    2: 'clamp(215px, 32vh, 290px)',
+    3: 'clamp(175px, 25vh, 230px)',
+    4: 'clamp(140px, 19vh, 180px)'
+  };
+
+  const state = loadState();
+  let liveRounds = [];
+  let pollTimer = null;
+  let displayedTotals = [0, 0, 0, 0];
+  let toastTimer = null;
+
+  // Referencias al DOM
+  const navbar = document.getElementById('navbar');
+  const btnExpandNav = document.getElementById('btn-expand-nav');
+  const btnCollapseNav = document.getElementById('btn-collapse-nav');
+  const statusPill = document.getElementById('status-pill');
+  const statusText = document.getElementById('status-text');
+
+  const contestTitle = document.getElementById('contest-title');
+  const podiumGrid = document.getElementById('podium-grid');
+  const demoControls = document.getElementById('demo-controls');
+
+  const viewPodium = document.getElementById('view-podium');
+  const viewBreakdown = document.getElementById('view-breakdown');
+  const segButtons = document.querySelectorAll('.seg-btn');
+
+  const breakdownSummary = document.getElementById('breakdown-summary');
+  const breakdownThead = document.getElementById('breakdown-thead');
+  const breakdownTbody = document.getElementById('breakdown-tbody');
+  const breakdownTfoot = document.getElementById('breakdown-tfoot');
+
+  const modalTeams = document.getElementById('modal-teams');
+  const formTeams = document.getElementById('form-teams');
+  const modalSheets = document.getElementById('modal-sheets');
+  const formSheets = document.getElementById('form-sheets');
+  const inputSheetUrl = document.getElementById('input-sheet-url');
+  const sheetFeedback = document.getElementById('sheet-feedback');
+  const btnDisconnectSheet = document.getElementById('btn-disconnect-sheet');
+  const toastEl = document.getElementById('toast');
+
+  // ==========================================================================
+  // PERSISTENCIA LOCAL
+  // ==========================================================================
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          title: parsed.title || 'Concurso de Preguntas',
+          teamNames:
+            Array.isArray(parsed.teamNames) && parsed.teamNames.length === 4
+              ? parsed.teamNames
+              : [...DEFAULT_TEAM_NAMES],
+          sheetUrl: parsed.sheetUrl || '',
+          navCollapsed: Boolean(parsed.navCollapsed),
+          demoRounds: Array.isArray(parsed.demoRounds)
+            ? parsed.demoRounds
+            : structuredClone(INITIAL_DEMO_ROUNDS)
+        };
+      }
+    } catch (_) {
+      // Si localStorage falla, se usan valores por defecto
+    }
+    return {
+      title: 'Concurso de Preguntas',
+      teamNames: [...DEFAULT_TEAM_NAMES],
+      sheetUrl: '',
+      navCollapsed: false,
+      demoRounds: structuredClone(INITIAL_DEMO_ROUNDS)
+    };
+  }
+
+  function saveState() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (_) {
+      // Ignorar errores de cuota
+    }
+  }
+
+  // ==========================================================================
+  // INICIALIZACIÓN DE INTERFAZ
+  // ==========================================================================
+  function init() {
+    contestTitle.textContent = state.title;
+    applyNavbarState();
+    buildPodiumSlots();
+    bindEvents();
+
+    if (window.location.hash === '#desglose') {
+      switchView('breakdown');
+    }
+
+    if (state.sheetUrl) {
+      startLivePolling(state.sheetUrl);
+    } else {
+      setStatus('demo', 'Demo');
+      renderAll();
+    }
+  }
+
+  function buildPodiumSlots() {
+    podiumGrid.innerHTML = '';
+
+    for (let i = 0; i < 4; i++) {
+      const slot = document.createElement('article');
+      slot.className = 'podium-slot';
+      slot.dataset.teamIndex = String(i);
+
+      slot.innerHTML = `
+        <div class="team-header">
+          <div
+            class="team-name"
+            contenteditable="true"
+            spellcheck="false"
+            data-team-name="${i}"
+            title="Haz clic para editar el nombre"
+          ></div>
+        </div>
+        <div class="pedestal">
+          <span class="rank-badge" data-rank-badge="${i}">1°</span>
+          <div class="score-block">
+            <div class="score-value" data-score-value="${i}">0</div>
+            <div class="score-label">Puntos</div>
+          </div>
+          <span class="delta-badge" data-delta-badge="${i}">0 pts</span>
+        </div>
+      `;
+
+      const nameEl = slot.querySelector('.team-name');
+      nameEl.addEventListener('blur', () => {
+        const clean = nameEl.textContent.trim();
+        state.teamNames[i] = clean || DEFAULT_TEAM_NAMES[i];
+        nameEl.textContent = state.teamNames[i];
+        saveState();
+        renderBreakdown();
+      });
+
+      nameEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          nameEl.blur();
+        }
+      });
+
+      podiumGrid.appendChild(slot);
+    }
+  }
+
+  // ==========================================================================
+  // CÁLCULO DE POSICIONES Y RENDERIZADO
+  // ==========================================================================
+  function getActiveRounds() {
+    return state.sheetUrl ? liveRounds : state.demoRounds;
+  }
+
+  function computeStandings() {
+    const rounds = getActiveRounds();
+    const totals = [0, 0, 0, 0];
+    const lastDeltas = [0, 0, 0, 0];
+
+    rounds.forEach((round, rIdx) => {
+      for (let i = 0; i < 4; i++) {
+        const val = Number(round.scores[i]) || 0;
+        totals[i] += val;
+        if (rIdx === rounds.length - 1) {
+          lastDeltas[i] = val;
+        }
+      }
+    });
+
+    // Ranking con soporte para empates (ej: 1°, 1°, 3°, 4°)
+    const ranks = totals.map((score) => {
+      let higherCount = 0;
+      for (let j = 0; j < 4; j++) {
+        if (totals[j] > score) higherCount++;
+      }
+      return higherCount + 1;
+    });
+
+    const maxScore = Math.max(...totals);
+    const hasPoints = maxScore > 0;
+
+    return [0, 1, 2, 3].map((i) => ({
+      index: i,
+      name: state.teamNames[i],
+      total: totals[i],
+      lastDelta: lastDeltas[i],
+      rank: ranks[i],
+      isLeader: hasPoints && ranks[i] === 1
+    }));
+  }
+
+  function renderAll() {
+    demoControls.classList.toggle('hidden', Boolean(state.sheetUrl));
+    renderPodium();
+    renderBreakdown();
+  }
+
+  function renderPodium() {
+    const standings = computeStandings();
+
+    standings.forEach((team) => {
+      const slot = podiumGrid.children[team.index];
+      const pedestal = slot.querySelector('.pedestal');
+      const nameEl = slot.querySelector(`[data-team-name="${team.index}"]`);
+      const rankEl = slot.querySelector(`[data-rank-badge="${team.index}"]`);
+      const scoreEl = slot.querySelector(`[data-score-value="${team.index}"]`);
+      const deltaEl = slot.querySelector(`[data-delta-badge="${team.index}"]`);
+
+      slot.classList.toggle('is-leader', team.isLeader);
+      pedestal.style.setProperty('--pedestal-height', RANK_HEIGHTS[team.rank] || RANK_HEIGHTS[4]);
+
+      if (document.activeElement !== nameEl) {
+        nameEl.textContent = team.name;
+      }
+
+      rankEl.textContent = `${team.rank}°`;
+      animateNumber(scoreEl, team.index, team.total);
+
+      if (team.lastDelta > 0) {
+        deltaEl.textContent = `+${team.lastDelta} ultima ronda`;
+        deltaEl.classList.add('is-positive');
+      } else if (team.lastDelta < 0) {
+        deltaEl.textContent = `${team.lastDelta} ultima ronda`;
+        deltaEl.classList.remove('is-positive');
+      } else {
+        deltaEl.textContent = '0 ultima ronda';
+        deltaEl.classList.remove('is-positive');
+      }
+    });
+  }
+
+  function animateNumber(el, teamIndex, targetValue) {
+    const startValue = displayedTotals[teamIndex];
+    if (startValue === targetValue) {
+      el.textContent = String(targetValue);
+      return;
+    }
+
+    const duration = 450;
+    const startTime = performance.now();
+
+    function step(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const current = Math.round(startValue + (targetValue - startValue) * eased);
+      el.textContent = String(current);
+
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        displayedTotals[teamIndex] = targetValue;
+        el.textContent = String(targetValue);
+      }
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  function renderBreakdown() {
+    const rounds = getActiveRounds();
+    const standings = computeStandings();
+    const sorted = [...standings].sort((a, b) => b.total - a.total);
+
+    // 1. Resumen superior
+    const leaders = sorted.filter((t) => t.rank === 1 && t.total > 0);
+    let leaderLabel = 'Sin puntos';
+    if (leaders.length === 1) {
+      leaderLabel = `${leaders[0].name} (${leaders[0].total} pts)`;
+    } else if (leaders.length > 1) {
+      leaderLabel = `Empate: ${leaders.map((l) => l.name).join(' / ')}`;
+    }
+
+    const diff = sorted.length >= 2 ? sorted[0].total - sorted[1].total : 0;
+
+    breakdownSummary.innerHTML = `
+      <div class="summary-card">
+        <div class="summary-label">Rondas Jugadas</div>
+        <div class="summary-value">${rounds.length}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Lider Actual</div>
+        <div class="summary-value">${escapeHtml(leaderLabel)}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Ventaja 1° vs 2°</div>
+        <div class="summary-value">${diff} pts</div>
+      </div>
+    `;
+
+    // 2. Cabecera de tabla
+    breakdownThead.innerHTML = `
+      <tr>
+        <th>Ronda</th>
+        ${standings.map((t) => `<th>${escapeHtml(t.name)}</th>`).join('')}
+      </tr>
+    `;
+
+    // 3. Filas por ronda
+    if (rounds.length === 0) {
+      breakdownTbody.innerHTML = `
+        <tr>
+          <td colspan="5" style="text-align:center; color: var(--text-secondary);">
+            Aun no hay rondas registradas.
+          </td>
+        </tr>
+      `;
+    } else {
+      breakdownTbody.innerHTML = rounds
+        .map((round) => {
+          const maxInRound = Math.max(...round.scores.map((s) => Number(s) || 0));
+          const cells = [0, 1, 2, 3]
+            .map((i) => {
+              const val = Number(round.scores[i]) || 0;
+              const isBest = maxInRound > 0 && val === maxInRound;
+              return `<td class="${isBest ? 'cell-round-best' : ''}">${val}</td>`;
+            })
+            .join('');
+
+          return `
+            <tr>
+              <td>${escapeHtml(round.label)}</td>
+              ${cells}
+            </tr>
+          `;
+        })
+        .join('');
+    }
+
+    // 4. Pie con totales acumulados
+    breakdownTfoot.innerHTML = `
+      <tr>
+        <td>Total Acumulado</td>
+        ${standings
+          .map(
+            (t) =>
+              `<td class="${t.isLeader ? 'cell-leader' : ''}">${t.total}</td>`
+          )
+          .join('')}
+      </tr>
+    `;
+  }
+
+  // ==========================================================================
+  // INTEGRACIÓN CON GOOGLE SHEETS (CSV)
+  // ==========================================================================
+  function normalizeSheetUrl(rawUrl) {
+    const trimmed = rawUrl.trim();
+    if (!trimmed) return '';
+
+    // Si pegaron un enlace estándar de edición de Google Sheets, lo adaptamos a exportación CSV
+    const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (match && !trimmed.includes('/pub')) {
+      return `https://docs.google.com/spreadsheets/d/${match[1]}/gviz/tq?tqx=out:csv`;
+    }
+    return trimmed;
+  }
+
+  async function fetchSheetData(url) {
+    const separator = url.includes('?') ? '&' : '?';
+    const bustUrl = `${url}${separator}_t=${Date.now()}`;
+
+    const response = await fetch(bustUrl, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const csvText = await response.text();
+    const rows = parseCSV(csvText);
+
+    if (rows.length < 1) {
+      throw new Error('Hoja vacía');
+    }
+
+    const parsedRounds = [];
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row || row.every((cell) => cell.trim() === '')) continue;
+
+      const label = (row[0] || `Ronda ${r}`).trim();
+      const scores = [0, 1, 2, 3].map((i) => {
+        const raw = (row[i + 1] || '0').trim().replace(',', '.');
+        const num = parseFloat(raw);
+        return Number.isFinite(num) ? num : 0;
+      });
+
+      parsedRounds.push({ label, scores });
+    }
+
+    liveRounds = parsedRounds;
+    setStatus('live', 'En vivo');
+    renderAll();
+  }
+
+  function parseCSV(text) {
+    const cleanText = text.replace(/^\uFEFF/, '');
+    const firstLine = cleanText.split(/\r?\n/)[0] || '';
+    const delimiter =
+      (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
+        ? ';'
+        : ',';
+
+    const rows = [];
+    let currentRow = [];
+    let currentCell = '';
+    let insideQuotes = false;
+
+    for (let i = 0; i < cleanText.length; i++) {
+      const char = cleanText[i];
+      const next = cleanText[i + 1];
+
+      if (char === '"') {
+        if (insideQuotes && next === '"') {
+          currentCell += '"';
+          i++;
+        } else {
+          insideQuotes = !insideQuotes;
+        }
+      } else if (char === delimiter && !insideQuotes) {
+        currentRow.push(currentCell);
+        currentCell = '';
+      } else if ((char === '\n' || char === '\r') && !insideQuotes) {
+        if (char === '\r' && next === '\n') i++;
+        currentRow.push(currentCell);
+        rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+      } else {
+        currentCell += char;
+      }
+    }
+
+    if (currentCell.length > 0 || currentRow.length > 0) {
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+    }
+
+    return rows;
+  }
+
+  function startLivePolling(url) {
+    stopLivePolling();
+    fetchSheetData(url).catch(() => {
+      setStatus('error', 'Sin conexion');
+    });
+
+    pollTimer = setInterval(() => {
+      fetchSheetData(url).catch(() => {
+        setStatus('error', 'Reintentando');
+      });
+    }, POLL_INTERVAL_MS);
+  }
+
+  function stopLivePolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function setStatus(mode, label) {
+    statusPill.classList.remove('is-live', 'is-error');
+    if (mode === 'live') statusPill.classList.add('is-live');
+    if (mode === 'error') statusPill.classList.add('is-error');
+    statusText.textContent = label;
+  }
+
+  // ==========================================================================
+  // EVENTOS Y CONTROLES DE USUARIO
+  // ==========================================================================
+  function applyNavbarState() {
+    navbar.classList.toggle('hidden', state.navCollapsed);
+    btnExpandNav.classList.toggle('hidden', !state.navCollapsed);
+    document.body.classList.toggle('nav-is-collapsed', state.navCollapsed);
+  }
+
+  function switchView(target) {
+    const isBreakdown = target === 'breakdown';
+    viewPodium.classList.toggle('active', !isBreakdown);
+    viewBreakdown.classList.toggle('active', isBreakdown);
+
+    segButtons.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.view === target);
+    });
+
+    window.history.replaceState(null, '', isBreakdown ? '#desglose' : '#podio');
+  }
+
+  function bindEvents() {
+    // Plegar y desplegar navbar
+    btnCollapseNav.addEventListener('click', () => {
+      state.navCollapsed = true;
+      saveState();
+      applyNavbarState();
+    });
+
+    btnExpandNav.addEventListener('click', () => {
+      state.navCollapsed = false;
+      saveState();
+      applyNavbarState();
+    });
+
+    // Cambio de vistas
+    segButtons.forEach((btn) => {
+      btn.addEventListener('click', () => switchView(btn.dataset.view));
+    });
+
+    document.getElementById('btn-back-podium').addEventListener('click', () => {
+      switchView('podium');
+    });
+
+    // Título editable
+    contestTitle.addEventListener('blur', () => {
+      const clean = contestTitle.textContent.trim();
+      state.title = clean || 'Concurso de Preguntas';
+      contestTitle.textContent = state.title;
+      saveState();
+    });
+
+    contestTitle.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        contestTitle.blur();
+      }
+    });
+
+    // Pantalla completa
+    document.getElementById('btn-fullscreen').addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
+
+    // Modo Demo: simular ronda y reiniciar
+    document.getElementById('btn-sim-round').addEventListener('click', () => {
+      const nextNum = state.demoRounds.length + 1;
+      const options = [10, 15, 20, 25, 30];
+      const scores = [0, 1, 2, 3].map(
+        () => options[Math.floor(Math.random() * options.length)]
+      );
+      state.demoRounds.push({ label: `Ronda ${nextNum}`, scores });
+      saveState();
+      renderAll();
+    });
+
+    document.getElementById('btn-reset-demo').addEventListener('click', () => {
+      state.demoRounds = [];
+      saveState();
+      renderAll();
+      showToast('Puntos reiniciados');
+    });
+
+    // Modal Equipos
+    document.getElementById('btn-open-teams').addEventListener('click', () => {
+      for (let i = 0; i < 4; i++) {
+        document.getElementById(`input-team-${i}`).value = state.teamNames[i];
+      }
+      modalTeams.classList.remove('hidden');
+    });
+
+    document.getElementById('btn-reset-names').addEventListener('click', () => {
+      for (let i = 0; i < 4; i++) {
+        document.getElementById(`input-team-${i}`).value = DEFAULT_TEAM_NAMES[i];
+      }
+    });
+
+    formTeams.addEventListener('submit', (e) => {
+      e.preventDefault();
+      for (let i = 0; i < 4; i++) {
+        const val = document.getElementById(`input-team-${i}`).value.trim();
+        state.teamNames[i] = val || DEFAULT_TEAM_NAMES[i];
+      }
+      saveState();
+      renderAll();
+      modalTeams.classList.add('hidden');
+      showToast('Nombres actualizados');
+    });
+
+    // Modal Google Sheets
+    document.getElementById('btn-open-sheets').addEventListener('click', () => {
+      inputSheetUrl.value = state.sheetUrl;
+      sheetFeedback.textContent = '';
+      sheetFeedback.className = 'sheet-feedback';
+      btnDisconnectSheet.classList.toggle('hidden', !state.sheetUrl);
+      modalSheets.classList.remove('hidden');
+    });
+
+    document.getElementById('btn-copy-template').addEventListener('click', () => {
+      const template = [
+        'Ronda\tEquipo 1\tEquipo 2\tEquipo 3\tEquipo 4',
+        'Ronda 1\t20\t30\t15\t25',
+        'Ronda 2\t25\t15\t30\t20'
+      ].join('\n');
+
+      navigator.clipboard
+        .writeText(template)
+        .then(() => showToast('Plantilla copiada al portapapeles'))
+        .catch(() => showToast('No se pudo copiar automáticamente'));
+    });
+
+    formSheets.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const normalized = normalizeSheetUrl(inputSheetUrl.value);
+      if (!normalized) {
+        sheetFeedback.textContent = 'Ingresa un enlace válido de Google Sheets.';
+        sheetFeedback.className = 'sheet-feedback is-error';
+        return;
+      }
+
+      sheetFeedback.textContent = 'Verificando conexión...';
+      sheetFeedback.className = 'sheet-feedback';
+
+      try {
+        await fetchSheetData(normalized);
+        state.sheetUrl = normalized;
+        saveState();
+        startLivePolling(normalized);
+        modalSheets.classList.add('hidden');
+        showToast('Conectado a Google Sheets');
+      } catch (_) {
+        sheetFeedback.textContent =
+          'No se pudo leer la hoja. Verifica que esté publicada en la web como CSV.';
+        sheetFeedback.className = 'sheet-feedback is-error';
+      }
+    });
+
+    btnDisconnectSheet.addEventListener('click', () => {
+      stopLivePolling();
+      state.sheetUrl = '';
+      liveRounds = [];
+      saveState();
+      setStatus('demo', 'Demo');
+      renderAll();
+      modalSheets.classList.add('hidden');
+      showToast('Modo Demo activado');
+    });
+
+    // Cerrar modales
+    document.querySelectorAll('[data-close-modal]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.getElementById(btn.dataset.closeModal).classList.add('hidden');
+      });
+    });
+
+    [modalTeams, modalSheets].forEach((backdrop) => {
+      backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) backdrop.classList.add('hidden');
+      });
+    });
+  }
+
+  function showToast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add('visible');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastEl.classList.remove('visible');
+    }, 2600);
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  init();
+})();

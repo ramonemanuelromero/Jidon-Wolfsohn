@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tablero en Vivo — Concurso de Preguntas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./estilos/styles.css" />
+</head>
+<body>
+  <!-- Botón flotante visible únicamente cuando la barra superior está plegada -->
+  <button id="btn-expand-nav" class="btn-expand-nav hidden" type="button">
+    Menu
+  </button>
+
+  <!-- Barra de navegación minimalista plegable -->
+  <header id="navbar" class="navbar">
+    <div class="nav-left">
+      <div class="status-pill" id="status-pill">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Demo</span>
+      </div>
+
+      <nav class="segmented-control" aria-label="Vistas">
+        <button type="button" class="seg-btn active" data-view="podium">Podio</button>
+        <button type="button" class="seg-btn" data-view="breakdown">Desglose</button>
+      </nav>
+    </div>
+
+    <div class="nav-right">
+      <button type="button" class="nav-btn" id="btn-open-teams">Equipos</button>
+      <button type="button" class="nav-btn" id="btn-open-sheets">Google Sheet</button>
+      <button type="button" class="nav-btn" id="btn-fullscreen">Pantalla completa</button>
+      <button type="button" class="nav-btn nav-btn-muted" id="btn-collapse-nav">Plegar</button>
+    </div>
+  </header>
+
+  <!-- Contenido principal -->
+  <main class="app-container">
+    <!-- VISTA 1: PODIO DE POSICIONES FIJAS -->
+    <section id="view-podium" class="view active">
+      <div class="title-wrapper">
+        <h1
+          id="contest-title"
+          class="contest-title"
+          contenteditable="true"
+          spellcheck="false"
+          title="Haz clic para editar el título"
+        >
+          Concurso de Preguntas
+        </h1>
+      </div>
+
+      <div id="podium-grid" class="podium-grid" aria-live="polite">
+        <!-- Las 4 columnas fijas se inicializan desde app.js -->
+      </div>
+
+      <!-- Controles discretos activos solo en modo Demo -->
+      <div id="demo-controls" class="demo-controls">
+        <button type="button" class="demo-btn" id="btn-sim-round">Simular ronda</button>
+        <button type="button" class="demo-btn" id="btn-reset-demo">Reiniciar puntos</button>
+      </div>
+    </section>
+
+    <!-- VISTA 2: DESGLOSE RONDA A RONDA -->
+    <section id="view-breakdown" class="view">
+      <div class="breakdown-header">
+        <button type="button" class="btn-back" id="btn-back-podium">Volver al Podio</button>
+        <h2 class="breakdown-title">Desglose por Ronda</h2>
+      </div>
+
+      <div id="breakdown-summary" class="breakdown-summary">
+        <!-- Tarjetas de resumen generadas desde app.js -->
+      </div>
+
+      <div class="table-card">
+        <div class="table-scroll">
+          <table id="breakdown-table" class="breakdown-table">
+            <thead id="breakdown-thead"></thead>
+            <tbody id="breakdown-tbody"></tbody>
+            <tfoot id="breakdown-tfoot"></tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL: EDITAR NOMBRES DE EQUIPOS -->
+  <div id="modal-teams" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-teams-title">
+    <div class="modal-box">
+      <h3 id="modal-teams-title" class="modal-title">Nombres de los Equipos</h3>
+      <p class="modal-desc">Personaliza cómo se muestran los 4 equipos en el podio y en el desglose.</p>
+
+      <form id="form-teams" class="modal-form">
+        <label class="field">
+          <span>Posición 1</span>
+          <input type="text" id="input-team-0" maxlength="32" required />
+        </label>
+        <label class="field">
+          <span>Posición 2</span>
+          <input type="text" id="input-team-1" maxlength="32" required />
+        </label>
+        <label class="field">
+          <span>Posición 3</span>
+          <input type="text" id="input-team-2" maxlength="32" required />
+        </label>
+        <label class="field">
+          <span>Posición 4</span>
+          <input type="text" id="input-team-3" maxlength="32" required />
+        </label>
+
+        <div class="modal-actions modal-actions-split">
+          <button type="button" class="btn-ghost" id="btn-reset-names">Restablecer</button>
+          <div class="modal-actions-group">
+            <button type="button" class="btn-secondary" data-close-modal="modal-teams">Cancelar</button>
+            <button type="submit" class="btn-primary">Guardar</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: CONECTAR GOOGLE SHEET -->
+  <div id="modal-sheets" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-sheets-title">
+    <div class="modal-box modal-box-wide">
+      <h3 id="modal-sheets-title" class="modal-title">Conectar Google Sheet</h3>
+      <p class="modal-desc">El tablero consulta tu hoja cada 5 segundos y actualiza el podio automáticamente.</p>
+
+      <ol class="steps-list">
+        <li>Crea una hoja con columnas: <strong>Ronda</strong>, <strong>Equipo 1</strong>, <strong>Equipo 2</strong>, <strong>Equipo 3</strong> y <strong>Equipo 4</strong>.</li>
+        <li>Ve a <strong>Archivo &rarr; Compartir &rarr; Publicar en la web</strong>, elige formato <strong>Valores separados por comas (.csv)</strong> y publica.</li>
+        <li>Pega debajo el enlace generado:</li>
+      </ol>
+
+      <div class="template-bar">
+        <span>Estructura base para pegar en la celda A1:</span>
+        <button type="button" class="btn-secondary btn-sm" id="btn-copy-template">Copiar plantilla</button>
+      </div>
+
+      <form id="form-sheets" class="modal-form">
+        <label class="field">
+          <span>Enlace CSV de Google Sheets</span>
+          <input
+            type="url"
+            id="input-sheet-url"
+            placeholder="https://docs.google.com/spreadsheets/d/.../pub?output=csv"
+          />
+        </label>
+
+        <p id="sheet-feedback" class="sheet-feedback"></p>
+
+        <div class="modal-actions modal-actions-split">
+          <button type="button" class="btn-danger hidden" id="btn-disconnect-sheet">Desconectar</button>
+          <div class="modal-actions-group">
+            <button type="button" class="btn-secondary" data-close-modal="modal-sheets">Cancelar</button>
+            <button type="submit" class="btn-primary">Conectar</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="./js/app,js" defer></script>
+</body>
+</html>

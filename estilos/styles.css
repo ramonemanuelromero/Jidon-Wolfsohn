@@ -369,20 +369,6 @@ body.nav-is-collapsed .app-container {
   color: var(--text-muted);
 }
 
-.delta-badge {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.delta-badge.is-positive {
-  color: #86efac;
-  background: rgba(34, 197, 94, 0.12);
-}
-
 .demo-controls {
   display: flex;
   justify-content: center;

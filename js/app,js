@@ -143,7 +143,6 @@
             <div class="score-value" data-score-value="${i}">0</div>
             <div class="score-label">Puntos</div>
           </div>
-          <span class="delta-badge" data-delta-badge="${i}">0 pts</span>
         </div>
       `;
 
@@ -177,15 +176,11 @@
   function computeStandings() {
     const rounds = getActiveRounds();
     const totals = [0, 0, 0, 0];
-    const lastDeltas = [0, 0, 0, 0];
 
-    rounds.forEach((round, rIdx) => {
+    rounds.forEach((round) => {
       for (let i = 0; i < 4; i++) {
         const val = Number(round.scores[i]) || 0;
         totals[i] += val;
-        if (rIdx === rounds.length - 1) {
-          lastDeltas[i] = val;
-        }
       }
     });
 
@@ -205,7 +200,6 @@
       index: i,
       name: state.teamNames[i],
       total: totals[i],
-      lastDelta: lastDeltas[i],
       rank: ranks[i],
       isLeader: hasPoints && ranks[i] === 1
     }));
@@ -227,7 +221,6 @@
       const nameEl = slot.querySelector(`[data-team-name="${team.index}"]`);
       const rankEl = slot.querySelector(`[data-rank-badge="${team.index}"]`);
       const scoreEl = slot.querySelector(`[data-score-value="${team.index}"]`);
-      const deltaEl = slot.querySelector(`[data-delta-badge="${team.index}"]`);
 
       slot.classList.toggle('is-leader', team.isLeader);
       pedestal.style.setProperty('--pedestal-height', RANK_HEIGHTS[team.rank] || RANK_HEIGHTS[4]);
@@ -238,17 +231,6 @@
 
       rankEl.textContent = `${team.rank}°`;
       animateNumber(scoreEl, team.index, team.total);
-
-      if (team.lastDelta > 0) {
-        deltaEl.textContent = `+${team.lastDelta} ultima ronda`;
-        deltaEl.classList.add('is-positive');
-      } else if (team.lastDelta < 0) {
-        deltaEl.textContent = `${team.lastDelta} ultima ronda`;
-        deltaEl.classList.remove('is-positive');
-      } else {
-        deltaEl.textContent = '0 ultima ronda';
-        deltaEl.classList.remove('is-positive');
-      }
     });
   }
 

@@ -32,6 +32,7 @@
     <div class="nav-right">
       <button type="button" class="nav-btn" id="btn-open-teams">Equipos</button>
       <button type="button" class="nav-btn" id="btn-open-sheets">Google Sheet</button>
+      <button type="button" class="nav-btn hidden" id="btn-refresh-sheet">Actualizar</button>
       <button type="button" class="nav-btn" id="btn-fullscreen">Pantalla completa</button>
       <button type="button" class="nav-btn nav-btn-muted" id="btn-collapse-nav">Plegar</button>
     </div>
@@ -126,7 +127,7 @@
   <div id="modal-sheets" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-sheets-title">
     <div class="modal-box modal-box-wide">
       <h3 id="modal-sheets-title" class="modal-title">Conectar Google Sheet</h3>
-      <p class="modal-desc">El tablero consulta tu hoja cada 5 segundos y actualiza el podio automáticamente.</p>
+      <p class="modal-desc">El tablero carga la hoja al conectarse. Para ver cambios posteriores, pulsa Actualizar.</p>
 
       <ol class="steps-list">
         <li>Crea una hoja con columnas: <strong>Ronda</strong>, <strong>Equipo 1</strong>, <strong>Equipo 2</strong>, <strong>Equipo 3</strong> y <strong>Equipo 4</strong>.</li>

@@ -2,7 +2,6 @@
   'use strict';
 
   const STORAGE_KEY = 'concurso_tablero_state_v1';
-  const POLL_INTERVAL_MS = 5000;
   const DEFAULT_TEAM_NAMES = ['Equipo 1', 'Equipo 2', 'Equipo 3', 'Equipo 4'];
 
   const INITIAL_DEMO_ROUNDS = [
@@ -21,7 +20,6 @@
 
   const state = loadState();
   let liveRounds = [];
-  let pollTimer = null;
   let displayedTotals = [0, 0, 0, 0];
   let toastTimer = null;
 
@@ -52,6 +50,7 @@
   const inputSheetUrl = document.getElementById('input-sheet-url');
   const sheetFeedback = document.getElementById('sheet-feedback');
   const btnDisconnectSheet = document.getElementById('btn-disconnect-sheet');
+  const btnRefreshSheet = document.getElementById('btn-refresh-sheet');
   const toastEl = document.getElementById('toast');
 
   // ==========================================================================
@@ -109,7 +108,11 @@
     }
 
     if (state.sheetUrl) {
-      startLivePolling(state.sheetUrl);
+      btnRefreshSheet.classList.remove('hidden');
+      renderAll();
+      refreshSheetData().catch(() => {
+        setStatus('error', 'Sin conexión');
+      });
     } else {
       setStatus('demo', 'Demo');
       renderAll();
@@ -210,6 +213,7 @@
 
   function renderAll() {
     demoControls.classList.toggle('hidden', Boolean(state.sheetUrl));
+    btnRefreshSheet.classList.toggle('hidden', !state.sheetUrl);
     renderPodium();
     renderBreakdown();
   }
@@ -391,14 +395,29 @@
       throw new Error('Hoja vacía');
     }
 
+    const headers = rows[0].map(normalizeHeader);
+    const roundColumn = headers.indexOf('ronda');
+    const scoreColumns = state.teamNames.map((name, i) => {
+      const standardColumn = headers.indexOf(normalizeHeader(`Equipo ${i + 1}`));
+      return standardColumn >= 0 ? standardColumn : headers.indexOf(normalizeHeader(name));
+    });
+
+    if (
+      roundColumn < 0 ||
+      scoreColumns.some((column) => column < 0) ||
+      new Set([roundColumn, ...scoreColumns]).size !== 5
+    ) {
+      throw new Error('Encabezados inválidos');
+    }
+
     const parsedRounds = [];
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r];
       if (!row || row.every((cell) => cell.trim() === '')) continue;
 
-      const label = (row[0] || `Ronda ${r}`).trim();
-      const scores = [0, 1, 2, 3].map((i) => {
-        const raw = (row[i + 1] || '0').trim().replace(',', '.');
+      const label = (row[roundColumn] || `Ronda ${r}`).trim();
+      const scores = scoreColumns.map((column) => {
+        const raw = (row[column] || '0').trim().replace(',', '.');
         const num = parseFloat(raw);
         return Number.isFinite(num) ? num : 0;
       });
@@ -406,18 +425,18 @@
       parsedRounds.push({ label, scores });
     }
 
-    liveRounds = parsedRounds;
-    setStatus('live', 'En vivo');
-    renderAll();
+    return parsedRounds;
   }
 
   function parseCSV(text) {
     const cleanText = text.replace(/^\uFEFF/, '');
     const firstLine = cleanText.split(/\r?\n/)[0] || '';
-    const delimiter =
-      (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length
-        ? ';'
-        : ',';
+    const delimiters = [',', ';', '\t'];
+    const delimiter = delimiters.reduce((mostLikely, candidate) =>
+      (firstLine.split(candidate).length > firstLine.split(mostLikely).length
+        ? candidate
+        : mostLikely)
+    );
 
     const rows = [];
     let currentRow = [];
@@ -457,23 +476,21 @@
     return rows;
   }
 
-  function startLivePolling(url) {
-    stopLivePolling();
-    fetchSheetData(url).catch(() => {
-      setStatus('error', 'Sin conexion');
-    });
+  async function refreshSheetData(url = state.sheetUrl) {
+    if (!url) return;
 
-    pollTimer = setInterval(() => {
-      fetchSheetData(url).catch(() => {
-        setStatus('error', 'Reintentando');
-      });
-    }, POLL_INTERVAL_MS);
-  }
+    btnRefreshSheet.disabled = true;
+    const originalText = btnRefreshSheet.textContent;
+    btnRefreshSheet.textContent = 'Actualizando...';
+    setStatus('demo', 'Actualizando');
 
-  function stopLivePolling() {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+    try {
+      liveRounds = await fetchSheetData(url);
+      setStatus('live', 'Actualizado');
+      renderAll();
+    } finally {
+      btnRefreshSheet.disabled = false;
+      btnRefreshSheet.textContent = originalText;
     }
   }
 
@@ -526,6 +543,15 @@
 
     document.getElementById('btn-back-podium').addEventListener('click', () => {
       switchView('podium');
+    });
+
+    btnRefreshSheet.addEventListener('click', () => {
+      refreshSheetData()
+        .then(() => showToast('Datos actualizados'))
+        .catch(() => {
+          setStatus('error', 'Error al actualizar');
+          showToast('No se pudo actualizar. Revisa la conexión y los encabezados de la hoja.');
+        });
     });
 
     // Título editable
@@ -632,21 +658,21 @@
       sheetFeedback.className = 'sheet-feedback';
 
       try {
-        await fetchSheetData(normalized);
+        liveRounds = await fetchSheetData(normalized);
         state.sheetUrl = normalized;
         saveState();
-        startLivePolling(normalized);
+        setStatus('live', 'Actualizado');
+        renderAll();
         modalSheets.classList.add('hidden');
         showToast('Conectado a Google Sheets');
       } catch (_) {
         sheetFeedback.textContent =
-          'No se pudo leer la hoja. Verifica que esté publicada en la web como CSV.';
+          'No se pudo leer la hoja. Publícala como CSV y verifica que tenga los encabezados Ronda y Equipo 1 a Equipo 4.';
         sheetFeedback.className = 'sheet-feedback is-error';
       }
     });
 
     btnDisconnectSheet.addEventListener('click', () => {
-      stopLivePolling();
       state.sheetUrl = '';
       liveRounds = [];
       saveState();
@@ -685,6 +711,15 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function normalizeHeader(value) {
+    return String(value)
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ');
   }
 
   init();
